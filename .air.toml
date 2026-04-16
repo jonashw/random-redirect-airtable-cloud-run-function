@@ -1,0 +1,9 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  entrypoint = "tmp/main"
+  cmd = "go build -o tmp/main ./cmd && chmod +x tmp/main"
+
+[screen]
+  clear_on_rebuild = true
