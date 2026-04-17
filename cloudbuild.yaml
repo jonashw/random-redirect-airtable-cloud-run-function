@@ -1,0 +1,15 @@
+steps:
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - functions
+      - deploy
+      - random-redirect
+      - --gen2
+      - --runtime=go122
+      - --region=us-central1
+      - --source=.
+      - --entry-point=RandomRedirect
+      - --trigger-http
+      - --allow-unauthenticated
+      - --set-secrets=AIRTABLE_API_KEY=AIRTABLE_API_KEY:latest,AIRTABLE_BASE_ID=AIRTABLE_BASE_ID:latest,AIRTABLE_TABLE_ID=AIRTABLE_TABLE_ID:latest
