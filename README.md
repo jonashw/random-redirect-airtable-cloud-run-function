@@ -10,7 +10,7 @@ Expected table definition:
 }
 ```
 
-Only records with `Active:true` are considered.
+Only records where `Active==true` are considered.
 
 ## Setup
 
