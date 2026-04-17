@@ -1,5 +1,17 @@
 Cloud Run function that redirects to a random URL from an Airtable base.
 
+Expected table definition:
+
+```
+{
+  Name: string,
+  URL: string,
+  Active: bool
+}
+```
+
+Only records with `Active:true` are considered.
+
 ## Setup
 
 Create a `.env` file:
