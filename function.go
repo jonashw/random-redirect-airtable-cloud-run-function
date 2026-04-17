@@ -57,17 +57,22 @@ func randomRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	chosen := sites[rand.IntN(len(sites))]
+
 	debug := r.URL.Query().Has("debug")
 
 	if debug {
 		w.Header().Set("Content-Type", "text/html")
 		for _, s := range sites {
-			fmt.Fprintf(w, "<div><a href=\"%s\">%s</a></div>\n", s.URL, s.Name)
+			if s == chosen {
+				fmt.Fprintf(w, "<div><strong><a href=\"%s\">%s</a></strong></div>\n", s.URL, s.Name)
+			} else {
+				fmt.Fprintf(w, "<div><a href=\"%s\">%s</a></div>\n", s.URL, s.Name)
+			}
 		}
 		return
 	}
 
-	chosen := sites[rand.IntN(len(sites))]
 	log.Printf("redirecting to: %s (%s)", chosen.Name, chosen.URL)
 	http.Redirect(w, r, chosen.URL, http.StatusFound)
 }

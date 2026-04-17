@@ -1,5 +1,3 @@
-# jons-tshirt-qrcode-service
-
 Cloud Run function that redirects to a random URL from an Airtable base.
 
 ## Setup
