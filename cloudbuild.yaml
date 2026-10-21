@@ -6,7 +6,7 @@ steps:
       - deploy
       - random-redirect
       - --gen2
-      - --runtime=go125
+      - --runtime=go127
       - --region=us-west1
       - --source=.
       - --entry-point=RandomRedirect
