@@ -2,278 +2,129 @@ package function
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jwilson4/go-tshirt/internal/airtableapi"
 )
 
-// fakeAirtable serves one page of records and counts record reads.
-type fakeAirtable struct {
-	srv       *httptest.Server
-	reads     atomic.Int32
-	refreshes atomic.Int32
-	url       atomic.Value // current site URL
+type fakeSource struct {
+	sites []site
+	err   error
+	reads int
 }
 
-func newFakeAirtable(t *testing.T) *fakeAirtable {
-	f := &fakeAirtable{}
-	f.url.Store("https://one.example")
-	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v0/app1/tbl1":
-			f.reads.Add(1)
-			fmt.Fprintf(w, `{"records":[{"fields":{"Name":"one","URL":%q,"Active":true}}]}`, f.url.Load())
-		case strings.HasSuffix(r.URL.Path, "/payloads"):
-			fmt.Fprint(w, `{"cursor":3,"mightHaveMore":false,"payloads":[]}`)
-		case strings.HasSuffix(r.URL.Path, "/refresh"):
-			f.refreshes.Add(1)
-			fmt.Fprint(w, `{}`)
-		default:
-			t.Errorf("unexpected Airtable call %s %s", r.Method, r.URL.Path)
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(f.srv.Close)
-	return f
+func (f *fakeSource) activeSites(context.Context) ([]site, error) {
+	f.reads++
+	return f.sites, f.err
 }
 
-const macSecret = "MDEyMzQ1Njc4OWFiY2RlZg==" // base64("0123456789abcdef")
+type clock struct{ t time.Time }
 
-func newTestApp(f *fakeAirtable, s store) *app {
-	at := airtableapi.New("key", "app1")
-	at.BaseURL = f.srv.URL
-	at.MinInterval = 0
-	return &app{
-		store:            s,
-		airtable:         at,
-		tableID:          "tbl1",
-		webhookID:        "ach1",
-		webhookMACSecret: macSecret,
-		refreshToken:     "tok",
-	}
+func (c *clock) now() time.Time { return c.t }
+
+func newTestApp(src sitesSource) (*app, *clock) {
+	c := &clock{t: time.Unix(0, 0)}
+	return &app{source: src, ttl: 10 * time.Second, now: c.now}, c
 }
 
-func scan(t *testing.T, a *app) string {
+func scan(t *testing.T, a *app) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	a.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusFound {
-		t.Fatalf("scan: status %d: %s", rec.Code, rec.Body)
-	}
-	return rec.Header().Get("Location")
+	return rec
 }
 
-func signedPing(body string) *http.Request {
-	secret, _ := base64.StdEncoding.DecodeString(macSecret)
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(body))
-	r := httptest.NewRequest(http.MethodPost, "/airtable-webhook", strings.NewReader(body))
-	r.Header.Set("X-Airtable-Content-MAC", "hmac-sha256="+hex.EncodeToString(mac.Sum(nil)))
-	return r
-}
+func TestCachesWithinTTLAndRereadsAfter(t *testing.T) {
+	src := &fakeSource{sites: []site{{"one", "https://one.example"}}}
+	a, c := newTestApp(src)
 
-func TestScansReadSnapshotNotAirtable(t *testing.T) {
-	f := newFakeAirtable(t)
-	a := newTestApp(f, &memoryStore{})
-
-	for range 20 {
-		if got := scan(t, a); got != "https://one.example" {
-			t.Fatalf("redirected to %q", got)
+	for range 50 {
+		if rec := scan(t, a); rec.Header().Get("Location") != "https://one.example" {
+			t.Fatalf("status %d, location %q", rec.Code, rec.Header().Get("Location"))
 		}
 	}
-	if n := f.reads.Load(); n != 1 {
-		t.Fatalf("Airtable read %d times for 20 scans; want 1 (initial fill only)", n)
+	if src.reads != 1 {
+		t.Fatalf("%d sheet reads for 50 scans within the TTL; want 1", src.reads)
+	}
+
+	src.sites = []site{{"two", "https://two.example"}}
+	c.t = c.t.Add(10 * time.Second)
+	if got := scan(t, a).Header().Get("Location"); got != "https://two.example" {
+		t.Fatalf("after TTL, redirected to %q", got)
+	}
+	if src.reads != 2 {
+		t.Fatalf("%d sheet reads; want 2", src.reads)
 	}
 }
 
-func TestWebhookUpdatesSnapshot(t *testing.T) {
-	f := newFakeAirtable(t)
-	s := &memoryStore{}
-	a := newTestApp(f, s)
+func TestServesLastGoodListWhenSheetReadFails(t *testing.T) {
+	src := &fakeSource{sites: []site{{"one", "https://one.example"}}}
+	a, c := newTestApp(src)
 	scan(t, a)
 
-	f.url.Store("https://two.example")
-	rec := httptest.NewRecorder()
-	a.ServeHTTP(rec, signedPing(`{"base":{"id":"app1"},"webhook":{"id":"ach1"}}`))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("webhook: status %d: %s", rec.Code, rec.Body)
-	}
-	if got := scan(t, a); got != "https://two.example" {
-		t.Fatalf("after webhook, redirected to %q", got)
-	}
-	if snap, _ := s.Load(context.Background()); snap.WebhookCursor != 3 {
-		t.Fatalf("cursor = %d, want 3", snap.WebhookCursor)
-	}
-}
-
-func TestWebhookRejectsBadSignatureAndUnknownID(t *testing.T) {
-	f := newFakeAirtable(t)
-	a := newTestApp(f, &memoryStore{})
-
-	r := httptest.NewRequest(http.MethodPost, "/airtable-webhook", strings.NewReader(`{"webhook":{"id":"ach1"}}`))
-	r.Header.Set("X-Airtable-Content-MAC", "hmac-sha256=00")
-	rec := httptest.NewRecorder()
-	a.ServeHTTP(rec, r)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("bad MAC: status %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
-	a.ServeHTTP(rec, signedPing(`{"webhook":{"id":"other"}}`))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("unknown webhook: status %d", rec.Code)
-	}
-	if f.reads.Load() != 0 {
-		t.Fatal("rejected pings must not read Airtable")
-	}
-}
-
-func TestRefreshEndpoint(t *testing.T) {
-	f := newFakeAirtable(t)
-	a := newTestApp(f, &memoryStore{})
-
-	rec := httptest.NewRecorder()
-	a.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/refresh", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: status %d", rec.Code)
-	}
-
-	r := httptest.NewRequest(http.MethodPost, "/refresh", nil)
-	r.Header.Set("Authorization", "Bearer tok")
-	rec = httptest.NewRecorder()
-	a.ServeHTTP(rec, r)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("refresh: status %d: %s", rec.Code, rec.Body)
-	}
-	if f.reads.Load() != 1 || f.refreshes.Load() != 1 {
-		t.Fatalf("reads=%d webhook refreshes=%d, want 1 and 1", f.reads.Load(), f.refreshes.Load())
-	}
-}
-
-// failingStore loads once, then fails like an unreachable Firestore.
-type failingStore struct {
-	memoryStore
-	fail atomic.Bool
-}
-
-func (s *failingStore) Load(ctx context.Context) (*snapshot, error) {
-	if s.fail.Load() {
-		return nil, errors.New("unavailable")
-	}
-	return s.memoryStore.Load(ctx)
-}
-
-func TestStoreOutageServesLastGood(t *testing.T) {
-	f := newFakeAirtable(t)
-	s := &failingStore{}
-	a := newTestApp(f, s)
-	scan(t, a)
-	s.fail.Store(true)
-
-	for range 5 {
-		if got := scan(t, a); got != "https://one.example" {
-			t.Fatalf("redirected to %q", got)
-		}
-	}
-	if n := f.reads.Load(); n != 1 {
-		t.Fatalf("Airtable read %d times; want 1", n)
-	}
-}
-
-func TestOlderRefreshDoesNotOverwriteNewer(t *testing.T) {
-	s := &memoryStore{}
-	now := time.Now()
-	ctx := context.Background()
-	s.SaveSites(ctx, []airtableapi.Site{{Name: "new"}}, now)
-	s.SaveSites(ctx, []airtableapi.Site{{Name: "old"}}, now.Add(-time.Second))
-	snap, _ := s.Load(ctx)
-	if snap.Sites[0].Name != "new" {
-		t.Fatalf("older refresh overwrote newer snapshot")
-	}
-}
-
-func TestConcurrentColdScansCoalesce(t *testing.T) {
-	f := newFakeAirtable(t)
-	a := newTestApp(f, &failingStore{}) // store never has a snapshot to give
-	a.store.(*failingStore).fail.Store(true)
-
-	done := make(chan struct{})
-	for range 20 {
-		go func() {
-			defer func() { done <- struct{}{} }()
-			rec := httptest.NewRecorder()
-			a.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-		}()
-	}
-	for range 20 {
-		<-done
-	}
-	if n := f.reads.Load(); n > 2 {
-		t.Fatalf("20 concurrent cold scans caused %d Airtable reads; want at most 2", n)
-	}
-}
-
-// saveFailingStore accepts reads but rejects every snapshot write.
-type saveFailingStore struct{ memoryStore }
-
-func (s *saveFailingStore) SaveSites(context.Context, []airtableapi.Site, time.Time) error {
-	return errors.New("write rejected")
-}
-
-func TestSaveFailureIsReportedButScanStillServed(t *testing.T) {
-	f := newFakeAirtable(t)
-	a := newTestApp(f, &saveFailingStore{})
-
-	if got := scan(t, a); got != "https://one.example" {
+	src.sites, src.err = nil, errors.New("quota exceeded")
+	c.t = c.t.Add(time.Minute)
+	if got := scan(t, a).Header().Get("Location"); got != "https://one.example" {
 		t.Fatalf("redirected to %q", got)
 	}
+}
 
-	rec := httptest.NewRecorder()
-	a.ServeHTTP(rec, signedPing(`{"webhook":{"id":"ach1"}}`))
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("webhook with failed save: status %d, want 502", rec.Code)
-	}
-
-	r := httptest.NewRequest(http.MethodPost, "/refresh", nil)
-	r.Header.Set("Authorization", "Bearer tok")
-	rec = httptest.NewRecorder()
-	a.ServeHTTP(rec, r)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("refresh with failed save: status %d, want 502", rec.Code)
+func TestErrorWithNothingCached(t *testing.T) {
+	a, _ := newTestApp(&fakeSource{err: errors.New("boom")})
+	if rec := scan(t, a); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d", rec.Code)
 	}
 }
 
-func TestEmptyTableIsAValidFallback(t *testing.T) {
-	f := newFakeAirtable(t)
-	f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.reads.Add(1)
-		fmt.Fprint(w, `{"records":[]}`)
-	})
-	s := &failingStore{}
-	a := newTestApp(f, s)
-
-	for i := range 3 {
-		if i == 1 {
-			s.fail.Store(true)
-		}
-		rec := httptest.NewRecorder()
-		a.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("scan %d: status %d, want 404", i, rec.Code)
+func TestEmptyListIsCachedAnd404s(t *testing.T) {
+	src := &fakeSource{sites: []site{}}
+	a, _ := newTestApp(src)
+	for range 3 {
+		if rec := scan(t, a); rec.Code != http.StatusNotFound {
+			t.Fatalf("status %d", rec.Code)
 		}
 	}
-	if n := f.reads.Load(); n != 1 {
-		t.Fatalf("Airtable read %d times; want 1", n)
+	if src.reads != 1 {
+		t.Fatalf("%d reads; want 1", src.reads)
+	}
+}
+
+func TestParseRows(t *testing.T) {
+	rows := [][]any{
+		{"Active", "Name", "URL", "Notes"},
+		{true, "a", "https://a"},
+		{false, "b", "https://b"},
+		{"checked", "c", "https://c"},
+		{true, "d"},
+		{"TRUE", "e", " https://e "},
+		{},
+	}
+	sites, err := parseRows(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(sites); got != "[{a https://a} {c https://c} {e https://e}]" {
+		t.Fatalf("got %s", got)
+	}
+	if _, err := parseRows([][]any{{"Name", "URL"}}); err == nil {
+		t.Fatal("want error for missing Active column")
+	}
+}
+
+func TestSheetReaderRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v4/spreadsheets/sheet1/values/Sites!A:C" || r.URL.Query().Get("valueRenderOption") != "UNFORMATTED_VALUE" {
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		fmt.Fprint(w, `{"values":[["Name","URL","Active"],["a","https://a",true]]}`)
+	}))
+	defer srv.Close()
+	s := &sheetReader{baseURL: srv.URL, http: srv.Client(), sheetID: "sheet1", rng: "Sites!A:C"}
+	sites, err := s.activeSites(context.Background())
+	if err != nil || fmt.Sprint(sites) != "[{a https://a}]" {
+		t.Fatalf("sites=%v err=%v", sites, err)
 	}
 }
