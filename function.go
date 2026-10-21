@@ -85,10 +85,19 @@ func newAppFromEnv(ctx context.Context) (*app, error) {
 		store:            s,
 		airtable:         airtableapi.New(apiKey, baseID),
 		tableID:          tableID,
-		webhookID:        os.Getenv("AIRTABLE_WEBHOOK_ID"),
-		webhookMACSecret: os.Getenv("AIRTABLE_WEBHOOK_MAC_SECRET"),
+		webhookID:        optionalEnv("AIRTABLE_WEBHOOK_ID"),
+		webhookMACSecret: optionalEnv("AIRTABLE_WEBHOOK_MAC_SECRET"),
 		refreshToken:     os.Getenv("REFRESH_TOKEN"),
 	}, nil
+}
+
+// optionalEnv treats "-" as unset, so a secret can exist as a placeholder
+// (cloudbuild.yaml mounts it either way) before the webhook is registered.
+func optionalEnv(key string) string {
+	if v := os.Getenv(key); v != "-" {
+		return v
+	}
+	return ""
 }
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -20,12 +20,21 @@ Scans never call Airtable. The active records live in one Firestore document
 - **`POST /airtable-webhook`**: an Airtable webhook pings this route whenever
   the table changes. The function verifies the signature, re-reads the table
   and rewrites the snapshot, typically within a few seconds of the edit.
-- **`POST /refresh`**: Cloud Scheduler calls this hourly. It re-syncs the
-  snapshot in case a ping was missed, and extends the webhook's 7-day expiry.
+- **`POST /refresh`**: Cloud Scheduler calls this once a day. It re-syncs
+  the snapshot in case a ping was missed, and extends the webhook's 7-day
+  expiry.
 
 If Firestore is unreachable, an instance serves the last snapshot it read.
 See [the alternatives analysis](docs/alternatives-analysis/airtable-cache.md)
 for why this design was chosen.
+
+### Airtable API budget
+
+Every Airtable API call counts toward the workspace's monthly cap (1,000 on
+the Free plan, reset on the 1st). Scans cost nothing. Each edit costs about
+2–3 calls (payload read + one call per 100 records), and the daily refresh
+about 2. That leaves room for roughly 300 edits a month on Free. Don't make
+the safety-net job hourly on Free: that alone would use ~720 calls a month.
 
 ## Setup
 
@@ -59,26 +68,43 @@ URL=$(gcloud functions describe random-redirect --region=us-west1 --gen2 --forma
 gcloud firestore databases create --location=us-west1 --type=firestore-native
 gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$SA" --role=roles/datastore.user
 
-# 2. Shared secret for the hourly refresh job
+# 2. Secrets. The webhook ones start as "-" placeholders (treated as unset)
+#    so the function can deploy before the webhook is registered.
 REFRESH_TOKEN=$(openssl rand -hex 32)
 printf '%s' "$REFRESH_TOKEN" | gcloud secrets create REFRESH_TOKEN --data-file=-
+printf '%s' '-' | gcloud secrets create AIRTABLE_WEBHOOK_ID --data-file=-
+printf '%s' '-' | gcloud secrets create AIRTABLE_WEBHOOK_MAC_SECRET --data-file=-
 
-# 3. Register the Airtable webhook. Add the webhook:manage scope to the token first.
-#    This prints two more `gcloud secrets create` commands; run them.
-env $(cat .env | xargs) go run ./cmd/registerwebhook "$URL/airtable-webhook"
-
-# 4. If secret access is granted per secret rather than project-wide:
+# 3. If secret access is granted per secret rather than project-wide:
 for s in REFRESH_TOKEN AIRTABLE_WEBHOOK_ID AIRTABLE_WEBHOOK_MAC_SECRET; do
   gcloud secrets add-iam-policy-binding $s --member="serviceAccount:$SA" --role=roles/secretmanager.secretAccessor
 done
 ```
 
-Then deploy (`cloudbuild.yaml` now mounts the three new secrets), and create
-the hourly safety-net job:
+### Seed the cache without the Airtable API
+
+If the monthly API cap is spent, fill the snapshot from a CSV export so scans
+work right away: in Airtable, open the table's view menu → **Download CSV**,
+then:
 
 ```sh
+gcloud auth application-default login
+GOOGLE_CLOUD_PROJECT=$PROJECT go run ./cmd/seedsnapshot ~/Downloads/<table>.csv
+```
+
+### Deploy, then register the webhook
+
+Deploy as usual (`cloudbuild.yaml` mounts the three new secrets). Then, once
+the Airtable API is available:
+
+```sh
+# Needs the webhook:manage scope on the token. Prints two
+# `gcloud secrets versions add` commands; run them, then redeploy.
+env $(cat .env | xargs) go run ./cmd/registerwebhook "$URL/airtable-webhook"
+
+# Daily safety net
 gcloud scheduler jobs create http airtable-cache-refresh \
-  --location=us-west1 --schedule="0 * * * *" \
+  --location=us-west1 --schedule="0 9 * * *" \
   --uri="$URL/refresh" --http-method=POST \
   --headers="Authorization=Bearer $REFRESH_TOKEN"
 ```

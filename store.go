@@ -132,3 +132,14 @@ func (m *memoryStore) SaveCursor(_ context.Context, cursor int) error {
 	m.snap.WebhookCursor = cursor
 	return nil
 }
+
+// SeedSnapshot writes sites to the Firestore snapshot without calling
+// Airtable. It is for cmd/seedsnapshot, to fill the cache from a CSV export
+// when the Airtable API is unavailable (e.g. the monthly call cap is spent).
+func SeedSnapshot(ctx context.Context, sites []airtableapi.Site) error {
+	s, err := newFirestoreStore(ctx)
+	if err != nil {
+		return err
+	}
+	return s.SaveSites(ctx, sites, time.Now())
+}

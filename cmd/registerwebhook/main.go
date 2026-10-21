@@ -34,7 +34,7 @@ func main() {
 	}
 
 	fmt.Printf("Webhook created (expires %s unless refreshed).\n\n", wh.ExpirationTime)
-	fmt.Println("Store these as secrets:")
-	fmt.Printf("  printf '%%s' '%s' | gcloud secrets create AIRTABLE_WEBHOOK_ID --data-file=-\n", wh.ID)
-	fmt.Printf("  printf '%%s' '%s' | gcloud secrets create AIRTABLE_WEBHOOK_MAC_SECRET --data-file=-\n", wh.MACSecretBase64)
+	fmt.Println("Store these in the placeholder secrets, then redeploy:")
+	fmt.Printf("  printf '%%s' '%s' | gcloud secrets versions add AIRTABLE_WEBHOOK_ID --data-file=-\n", wh.ID)
+	fmt.Printf("  printf '%%s' '%s' | gcloud secrets versions add AIRTABLE_WEBHOOK_MAC_SECRET --data-file=-\n", wh.MACSecretBase64)
 }
