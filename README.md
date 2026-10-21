@@ -54,6 +54,19 @@ for why the list moved from Airtable to Google Sheets.
 Optional: `SHEET_RANGE` picks a tab or range (e.g. `Sites` or `Sites!A:C`).
 The default is the first tab.
 
+## Deploy
+
+Merging to `main` deploys automatically: a Cloud Build trigger in `us-west1`
+runs `cloudbuild.yaml`. Check recent deploys with:
+
+```sh
+gcloud builds list --region=us-west1 --limit=5
+```
+
+(Without `--region`, `gcloud builds list` shows only global builds, not the
+trigger's.) Create any new secrets a change needs before merging it, or the
+deploy fails.
+
 ## Dev
 
 Create a `.env` file:

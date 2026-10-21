@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
+	"html/template"
 	"log"
 	"math/rand/v2"
 	"net/http"
@@ -19,6 +19,30 @@ import (
 // also caps Sheets reads at one per TTL per instance, far under the
 // 60 reads/minute per-user quota.
 const cacheTTL = 10 * time.Second
+
+// debugPage lists the active sites; the row picked for this request is highlighted.
+var debugPage = template.Must(template.New("debug").Funcs(template.FuncMap{"inc": func(i int) int { return i + 1 }}).Parse(`<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Active sites</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 16px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #ddd; vertical-align: top; }
+  td.url { word-break: break-all; }
+  tr.chosen { background: #fff3c4; font-weight: 600; }
+  caption { text-align: left; padding-bottom: 8px; color: #555; }
+</style>
+<table>
+  <caption>{{len .Sites}} active sites. The highlighted row is this request's pick.</caption>
+  <thead><tr><th>#</th><th>Name</th><th>URL</th></tr></thead>
+  <tbody>
+  {{- range $i, $s := .Sites}}
+    <tr{{if eq $s $.Chosen}} class="chosen"{{end}}><td>{{inc $i}}</td><td>{{$s.Name}}</td><td class="url"><a href="{{$s.URL}}">{{$s.URL}}</a></td></tr>
+  {{- end}}
+  </tbody>
+</table>
+`))
 
 func init() {
 	functions.HTTP("RandomRedirect", handle)
@@ -106,13 +130,9 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	chosen := sites[rand.IntN(len(sites))]
 
 	if r.URL.Query().Has("debug") {
-		w.Header().Set("Content-Type", "text/html")
-		for _, s := range sites {
-			link := fmt.Sprintf("<a href=\"%s\">%s</a>", html.EscapeString(s.URL), html.EscapeString(s.Name))
-			if s == chosen {
-				link = "<strong>" + link + "</strong>"
-			}
-			fmt.Fprintf(w, "<div>%s</div>\n", link)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := debugPage.Execute(w, map[string]any{"Sites": sites, "Chosen": chosen}); err != nil {
+			log.Printf("debug page: %v", err)
 		}
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,5 +127,32 @@ func TestSheetReaderRequest(t *testing.T) {
 	sites, err := s.activeSites(context.Background())
 	if err != nil || fmt.Sprint(sites) != "[{a https://a}]" {
 		t.Fatalf("sites=%v err=%v", sites, err)
+	}
+}
+
+func TestDebugPageIsATable(t *testing.T) {
+	src := &fakeSource{sites: []site{
+		{"one", "https://one.example"},
+		{"<b>two</b>", "https://two.example/?a=1&b=2"},
+	}}
+	a, _ := newTestApp(src)
+	rec := httptest.NewRecorder()
+	a.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?debug", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	for _, want := range []string{
+		"<table>", "<th>Name</th>", "2 active sites",
+		`<tr class="chosen">`,
+		"&lt;b&gt;two&lt;/b&gt;", // names are escaped
+		`href="https://two.example/?a=1&amp;b=2"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("debug page missing %q:\n%s", want, body)
+		}
+	}
+	if n := strings.Count(body, `class="chosen"`); n != 1 {
+		t.Errorf("%d highlighted rows; want 1", n)
 	}
 }
