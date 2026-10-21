@@ -57,7 +57,7 @@ flowchart LR
 
 ## Decision
 
-Adopt **Alternative 1: a Firestore snapshot, refreshed by an Airtable webhook, with an hourly reconcile job**. It has the highest weighted score (4.45 / 5). It's the only alternative that meets both R1 and R2 without depending on Cloud Run's instance count, without adding a second cloud, and without changing the QR URL. **Alternative 2 (an in-memory cache with `max-instances=1`) scored a close second (4.30).** It's the right choice if fewer moving parts matter more than guaranteed freshness across instances (see Sensitivity).
+Adopt **Alternative 1: a Firestore snapshot, refreshed by an Airtable webhook, with an hourly reconcile job**. It has the highest weighted score (4.45 / 5). It's the only alternative that meets both R1 and R2 without depending on Cloud Run's instance count, without adding a second cloud, and without changing the QR URL. **Alternative 2 (an in-memory cache with `max-instances=1`) scored a close second (4.30).** It's the right choice if fewer moving parts matter more than guaranteed freshness across instances (see Robustness). Alt 1 ranks first in 95–100% of 10,000 randomised weightings, so the decision is robust even though the raw margin counts as close.
 
 ## Proposal
 
@@ -249,6 +249,39 @@ Scores are integers 1–5, where **5 is always the most desirable**. Cost, effor
 
 Scores of 2 and 4 sit between the neighbouring anchors.
 
-#### Sensitivity
+#### Robustness
 
-The ranking between Alternatives 1 and 2 depends on the weights. If C1 and C2 are each lowered to 0.15 and effort (C4) and day-2 ops (C8) are each raised to 0.15, Alternative 2 comes out ahead (4.35 vs. 4.30). Choose Alternative 2 if simplicity matters more than guaranteed freshness across instances. Under any weighting that treats R1 and R2 as the main requirements, Alternative 1 stays ahead.
+All figures come from [`airtable-cache-robustness.py`](airtable-cache-robustness.py). It uses seed `20261021` and needs numpy.
+
+**1. Dominance.** No alternative dominates. Alt 1 scores higher than Alt 2 on C1, C2 and C6, and lower on C4, C5, C8 and C9. So the result depends on the weights, and the checks below are needed.
+
+**2. Winning margin.** Alt 1 leads Alt 2 by Δ = 4.45 − 4.30 = **0.15**. Normalised by the score range, Δ̄ = 0.15 / (5 − 1) = **0.0375**. That's below 0.05, so the margin counts as **close**, and the spec requires the Monte Carlo check with at least 10,000 trials.
+
+**3. Flip points.** The table shows, for each criterion, the smallest change δₖ to its weight that would put Alt 2 ahead of Alt 1. The other weights are rescaled so the total stays 1. dₖ is Alt 1's score minus Alt 2's on that criterion.
+
+| Criterion | Wₖ | dₖ | δₖ | Weight at which Alt 2 takes the lead | \|δₖ\| / Wₖ |
+|---|---|---|---|---|---|
+| C1. Scan path never calls Airtable | 0.20 | +1 | −0.141 | 0.059 | 0.71 |
+| C2. Edit propagation latency | 0.20 | +1 | −0.141 | 0.059 | 0.71 |
+| C3. Infra cost | 0.10 | 0 | — (cannot flip) | — | — |
+| C4. Implementation effort | 0.10 | −1 | +0.117 | 0.217 | 1.17 |
+| C5. Scan latency | 0.10 | −1 | +0.117 | 0.217 | 1.17 |
+| C6. Reliability | 0.10 | +1 | −0.159 | infeasible (weight would go below 0) | — |
+| C7. Security | 0.05 | 0 | — (cannot flip) | — | — |
+| C8. Day-2 ops | 0.10 | −1 | +0.117 | 0.217 | 1.17 |
+| C9. Reversibility | 0.05 | −1 | +0.124 | 0.174 | 2.48 |
+
+The most critical criteria are **C1 and C2**. For Alt 2 to take the lead, either one's weight has to drop from 0.20 to about 0.06, which is 71% of its base weight. On the other side, C4, C5 or C8 would each have to more than double, from 0.10 to about 0.22. None of these flip points is a small fraction of its weight, so **no single contestable weight decides the outcome**.
+
+Changing several weights at once can still flip the result. For example, moving 0.05 from each of C1 and C2 onto C4 and C8 (making all four 0.15) gives Alt 2 4.35 against Alt 1's 4.30. So the result still comes down to one judgement: how much do the stated requirements (R1 and R2) matter compared with simplicity?
+
+**4. Monte Carlo.** 10,000 trials per method. Scores are held fixed and weights are rescaled so each trial sums to 1.
+
+| Sampling method | Alt 1 | Alt 2 | Alt 3 | Alt 4 |
+|---|---|---|---|---|
+| Each weight moved independently by up to ±20% of its base value | **100.0%** | 0.0% | 0.0% | 0.0% |
+| Weights drawn from a Dirichlet distribution centred on the base weights (α = 100 · W) | **95.1%** | 4.9% | 0.0% | 0.0% |
+
+The percentages are win probabilities: the share of trials in which each alternative ranked first.
+
+**5. Interpretation.** On raw score, the margin counts as close. But Alt 1 ranks first in 95–100% of the weight samples, and no single weight can reverse the result without moving by at least 71% of its value. Under the spec's test, Alt 1 is **robust**. Alt 3 and Alt 4 never rank first. The only realistic challenger is Alt 2. It wins only if Jon deliberately weights simplicity (C4 and C8) above meeting R1 and R2 under all conditions. That would be a legitimate choice, but it would mean relaxing the original requirements.
