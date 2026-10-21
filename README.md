@@ -33,23 +33,18 @@ for why the list moved from Airtable to Google Sheets.
    `setupSitesSheet`. It adds Active checkboxes (converting Airtable's
    `checked` values), URL validation that rejects bad input, and highlighting
    for incomplete or duplicate rows.
-2. Share the sheet (Viewer) with the function's runtime service account and
-   store the sheet ID (the long ID in the sheet's URL) as a secret:
+2. Share the sheet (Viewer) with the function's runtime service account,
+   enable the Sheets API, and put the sheet ID (the long ID in the sheet's
+   URL) in `cloudbuild.yaml` as `SHEET_ID`:
 
    ```sh
    PROJECT=$(gcloud config get-value project)
    PROJECT_NUMBER=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
    echo "Share the sheet with: ${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-
    gcloud services enable sheets.googleapis.com
-   printf '%s' '<sheet-id>' | gcloud secrets create SHEET_ID --data-file=-
-   # If secret access is granted per secret rather than project-wide:
-   gcloud secrets add-iam-policy-binding SHEET_ID \
-     --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-     --role=roles/secretmanager.secretAccessor
    ```
-3. Deploy (`cloudbuild.yaml`). The old `AIRTABLE_*` secrets are no longer used
-   and can be deleted afterwards.
+3. Deploy (`cloudbuild.yaml`). It also clears the old `AIRTABLE_*` secret
+   mounts; those secrets can be deleted afterwards.
 
 Optional: `SHEET_RANGE` picks a tab or range (e.g. `Sites` or `Sites!A:C`).
 The default is the first tab.

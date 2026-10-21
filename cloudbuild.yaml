@@ -12,7 +12,9 @@ steps:
       - --entry-point=RandomRedirect
       - --trigger-http
       - --allow-unauthenticated
-      - --set-secrets=SHEET_ID=SHEET_ID:latest
+      # The sheet ID is not a secret: only accounts the sheet is shared with can read it.
+      - --set-env-vars=SHEET_ID=1wInfgU8QCmAfmTilZoIav3kgsCsg8ojG-IXRcw6Kbmw
+      - --clear-secrets
 
 options:
   logging: CLOUD_LOGGING_ONLY
