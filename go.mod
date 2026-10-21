@@ -1,6 +1,6 @@
 module github.com/jwilson4/go-tshirt
 
-go 1.25.0
+go 1.27
 
 require (
 	github.com/GoogleCloudPlatform/functions-framework-go v1.9.2
