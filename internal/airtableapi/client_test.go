@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestFetchActiveSitesPagesAndFilters(t *testing.T) {
@@ -104,5 +105,27 @@ func TestVerifyMAC(t *testing.T) {
 	}
 	if VerifyMAC("", body, good) {
 		t.Error("empty secret accepted")
+	}
+}
+
+func TestRequestsArePaced(t *testing.T) {
+	var times []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		times = append(times, time.Now())
+		if r.URL.Query().Get("offset") == "" {
+			fmt.Fprint(w, `{"records":[],"offset":"p2"}`)
+		} else {
+			fmt.Fprint(w, `{"records":[]}`)
+		}
+	}))
+	defer srv.Close()
+	c := New("key", "app1")
+	c.BaseURL = srv.URL
+	c.MinInterval = 50 * time.Millisecond
+	if _, err := c.FetchActiveSites(context.Background(), "tbl1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(times) != 2 || times[1].Sub(times[0]) < 45*time.Millisecond {
+		t.Fatalf("requests not paced: %v", times)
 	}
 }

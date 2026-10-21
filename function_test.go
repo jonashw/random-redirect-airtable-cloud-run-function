@@ -53,6 +53,7 @@ const macSecret = "MDEyMzQ1Njc4OWFiY2RlZg==" // base64("0123456789abcdef")
 func newTestApp(f *fakeAirtable, s store) *app {
 	at := airtableapi.New("key", "app1")
 	at.BaseURL = f.srv.URL
+	at.MinInterval = 0
 	return &app{
 		store:            s,
 		airtable:         at,
@@ -220,5 +221,59 @@ func TestConcurrentColdScansCoalesce(t *testing.T) {
 	}
 	if n := f.reads.Load(); n > 2 {
 		t.Fatalf("20 concurrent cold scans caused %d Airtable reads; want at most 2", n)
+	}
+}
+
+// saveFailingStore accepts reads but rejects every snapshot write.
+type saveFailingStore struct{ memoryStore }
+
+func (s *saveFailingStore) SaveSites(context.Context, []airtableapi.Site, time.Time) error {
+	return errors.New("write rejected")
+}
+
+func TestSaveFailureIsReportedButScanStillServed(t *testing.T) {
+	f := newFakeAirtable(t)
+	a := newTestApp(f, &saveFailingStore{})
+
+	if got := scan(t, a); got != "https://one.example" {
+		t.Fatalf("redirected to %q", got)
+	}
+
+	rec := httptest.NewRecorder()
+	a.ServeHTTP(rec, signedPing(`{"webhook":{"id":"ach1"}}`))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("webhook with failed save: status %d, want 502", rec.Code)
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	r.Header.Set("Authorization", "Bearer tok")
+	rec = httptest.NewRecorder()
+	a.ServeHTTP(rec, r)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("refresh with failed save: status %d, want 502", rec.Code)
+	}
+}
+
+func TestEmptyTableIsAValidFallback(t *testing.T) {
+	f := newFakeAirtable(t)
+	f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.reads.Add(1)
+		fmt.Fprint(w, `{"records":[]}`)
+	})
+	s := &failingStore{}
+	a := newTestApp(f, s)
+
+	for i := range 3 {
+		if i == 1 {
+			s.fail.Store(true)
+		}
+		rec := httptest.NewRecorder()
+		a.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("scan %d: status %d, want 404", i, rec.Code)
+		}
+	}
+	if n := f.reads.Load(); n != 1 {
+		t.Fatalf("Airtable read %d times; want 1", n)
 	}
 }

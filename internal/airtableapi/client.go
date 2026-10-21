@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,12 @@ type Client struct {
 	BaseID  string
 	BaseURL string // defaults to DefaultBaseURL; overridden in tests
 	HTTP    *http.Client
+
+	// MinInterval spaces this client's requests to stay under Airtable's
+	// 5 requests/second per base limit, e.g. when paging a large table.
+	MinInterval time.Duration
+	paceMu      sync.Mutex
+	nextAt      time.Time
 }
 
 func New(apiKey, baseID string) *Client {
@@ -34,6 +41,28 @@ func New(apiKey, baseID string) *Client {
 		BaseID:  baseID,
 		BaseURL: DefaultBaseURL,
 		HTTP:    &http.Client{Timeout: 15 * time.Second},
+
+		MinInterval: 250 * time.Millisecond,
+	}
+}
+
+// pace blocks until this client may send its next request.
+func (c *Client) pace(ctx context.Context) error {
+	c.paceMu.Lock()
+	now := time.Now()
+	wait := c.nextAt.Sub(now)
+	c.nextAt = now.Add(max(wait, 0) + c.MinInterval)
+	c.paceMu.Unlock()
+	if wait <= 0 {
+		return nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -46,7 +75,7 @@ type Site struct {
 // FetchActiveSites pages through every record in the table and returns those
 // with Active == true and a non-empty URL.
 func (c *Client) FetchActiveSites(ctx context.Context, tableID string) ([]Site, error) {
-	var sites []Site
+	sites := []Site{} // non-nil: an empty table is a valid snapshot
 	offset := ""
 	for {
 		q := url.Values{}
@@ -183,6 +212,9 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, in, 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
+		return err
+	}
+	if err := c.pace(ctx); err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)

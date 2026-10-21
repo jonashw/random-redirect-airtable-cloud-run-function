@@ -153,7 +153,12 @@ func (a *app) sites(ctx context.Context) ([]airtableapi.Site, error) {
 			return last, nil
 		}
 	}
-	return a.refresh(ctx)
+	sites, err := a.refresh(ctx)
+	if sites != nil {
+		// Fetched fine; only saving it failed. Still good for this scan.
+		return sites, nil
+	}
+	return nil, err
 }
 
 // refresh re-reads the table from Airtable and saves the snapshot. Calls on
@@ -161,6 +166,10 @@ func (a *app) sites(ctx context.Context) ([]airtableapi.Site, error) {
 // by a refresh that started after it arrived reuses that result instead of
 // calling Airtable again. This keeps a burst of webhook pings or cold scans
 // down to one or two Airtable reads.
+//
+// If the fetch succeeds but saving the snapshot fails, refresh returns the
+// fetched sites together with the save error, so the webhook and Scheduler
+// handlers report failure instead of acknowledging an unapplied update.
 func (a *app) refresh(ctx context.Context) ([]airtableapi.Site, error) {
 	requested := time.Now()
 	a.refreshMu.Lock()
@@ -172,14 +181,15 @@ func (a *app) refresh(ctx context.Context) ([]airtableapi.Site, error) {
 	start := time.Now()
 	sites, err := a.airtable.FetchActiveSites(ctx, a.tableID)
 	if err == nil {
-		if saveErr := a.store.SaveSites(ctx, sites, start); saveErr != nil {
-			// The fetched data is still good for this caller.
-			log.Printf("snapshot save failed: %v", saveErr)
-		}
 		a.mu.Lock()
 		a.lastGood = sites
 		a.mu.Unlock()
-		log.Printf("snapshot refreshed: %d active sites", len(sites))
+		if err = a.store.SaveSites(ctx, sites, start); err != nil {
+			err = fmt.Errorf("snapshot save failed: %w", err)
+			log.Print(err)
+		} else {
+			log.Printf("snapshot refreshed: %d active sites", len(sites))
+		}
 	}
 	a.lastRefreshStart, a.lastRefreshSites, a.lastRefreshErr = start, sites, err
 	return sites, err
