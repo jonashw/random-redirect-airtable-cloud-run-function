@@ -27,9 +27,12 @@ for why the list moved from Airtable to Google Sheets.
 ## Setup
 
 1. Create the sheet. To move from Airtable, download the table as CSV
-   (view menu → **Download CSV**) and use **File → Import** in Google Sheets.
-   Then select the `Active` column and use **Insert → Checkbox**. Cells that
-   read `checked` or `TRUE` are also accepted as ticked.
+   (view menu → **Download CSV**) and use **File → Import → Replace current
+   sheet** in Google Sheets. Then open **Extensions → Apps Script**, paste
+   [`scripts/setup-sites-sheet.gs`](scripts/setup-sites-sheet.gs) and run
+   `setupSitesSheet`. It adds Active checkboxes (converting Airtable's
+   `checked` values), URL validation that rejects bad input, and highlighting
+   for incomplete or duplicate rows.
 2. Share the sheet (Viewer) with the function's runtime service account and
    store the sheet ID (the long ID in the sheet's URL) as a secret:
 

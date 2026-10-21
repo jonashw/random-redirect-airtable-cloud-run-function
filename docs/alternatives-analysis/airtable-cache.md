@@ -6,7 +6,9 @@
 |---|---|
 | Summary | Choose how to put a cache between Airtable and the `RandomRedirect` Cloud Run function. The goals are that QR scans never trigger Airtable rate-limit errors and that Airtable edits reach the cache within seconds. |
 | Created | 2026-10-21 |
-| Status | READY FOR REVIEW |
+| Status | FINAL (superseded) |
+
+> **Superseded on 2026-10-21** by [Replacing Airtable](replace-airtable.md). The real constraint turned out to be Airtable's monthly API cap, not the per-second limit, so the redirect list moved to Google Sheets.
 
 ## Background
 

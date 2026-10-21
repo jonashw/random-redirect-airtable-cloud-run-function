@@ -6,7 +6,7 @@
 |---|---|
 | Summary | Decide whether to keep Airtable or move the redirect list (Name, URL, Active) to another store. The deciding needs are editing records on the go from an Android phone, and never running out of API quota. |
 | Created | 2026-10-21 |
-| Status | READY FOR REVIEW |
+| Status | FINAL |
 
 ## Background
 
@@ -57,6 +57,16 @@ The deciding factors:
 - The Sheets API has no daily or monthly cap, only 300 reads per minute per project ([Sheets API limits](https://developers.google.com/workspace/sheets/api/limits)). That removes the problem that started this work.
 - The function can read the sheet with its own Google identity, so no API key is needed.
 - It reuses almost all of PR #1.
+
+### Decision update (2026-10-21, after review)
+
+Jon chose Google Sheets and also chose to **drop the push and snapshot machinery**. The function reads the sheet directly through a **10-second per-instance in-memory cache**, and serves the last good list if a read fails. The reasons:
+
+- **Quota.** Once Airtable's monthly cap is gone, the only limit left is Sheets' 60 reads a minute per user (the service account). A 10-second TTL needs at most 6 reads a minute per instance.
+- **Freshness.** About 10 seconds is effectively instant for this use. The push path's advantage depended on Apps Script `onEdit` firing for Android-app edits, which was unverified.
+- **Moving parts.** Firestore, Cloud Scheduler, the Apps Script trigger and the refresh route are no longer needed.
+
+Jon tried a sample sheet set up by `scripts/setup-sites-sheet.gs` (checkboxes, URL validation that rejects invalid input, highlighting) and found the Sheets UI acceptable for editing on the go. The proposal below is kept as it was reviewed.
 
 ## Proposal
 
